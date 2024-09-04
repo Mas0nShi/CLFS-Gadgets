@@ -1,0 +1,816 @@
+//------------------------------------------------
+//--- 010 Editor v12.0.1 Binary Template
+//
+//      File: BLF.bt 
+//   Authors: Mas0n
+//   Version: 0.0.1
+//   Purpose: analyze BLF (Block Log File)
+//  Category: 
+// File Mask: *.blf
+//  ID Bytes: 
+//   History: 
+//------------------------------------------------
+DisplayFormatHex();
+/* ======== Generic Windows ======== */
+// Refer: https://learn.microsoft.com/en-us/windows/win32/fileio/file-attribute-constants
+typedef enum<USHORT> {
+    READONLY                    = 0x00000001,
+    HIDDEN                      = 0x00000002,
+    SYSTEM                      = 0x00000004,
+    DIRECTORY                   = 0x00000010,
+    ARCHIVE                     = 0x00000020,
+    DEVICE                      = 0x00000040,
+    NORMAL                      = 0x00000080,
+    TEMPORARY                   = 0x00000100,
+    SPARSE_FILE                 = 0x00000200,
+    REPARSE_POINT               = 0x00000400,
+    COMPRESSED                  = 0x00000800,
+    OFFLINE                     = 0x00001000,
+    NOT_CONTENT_INDEXED         = 0x00002000,
+    ENCRYPTED                   = 0x00004000,
+    VIRTUAL                     = 0x00010000,
+    INVALID_FILE_ATTRIBUTES     = 0xFFFFFFFF,
+} FILE_ATTRIBUTES;
+
+typedef QWORD ULONGLONG;
+typedef USHORT CLFS_CLIENT_ID;
+typedef QWORD HANDLE;
+
+// Taken from clfslsn.h (Windows SDK)
+typedef UINT32 CLFS_RECORD_INDEX;
+typedef ULONG CLFS_CONTAINER_ID;
+
+typedef union _CLS_LSN {
+    //
+    // Container identifier
+    //
+    
+    struct {
+        CLFS_RECORD_INDEX   idxRecord<comment="Record offset on container">;
+        CLFS_CONTAINER_ID   cidContainer<comment="Container identifier">;
+    } offset;
+
+    ULONGLONG ullOffset<comment="Sequence number within physical log.">; 
+} CLS_LSN;
+
+typedef CLS_LSN CLFS_LSN;
+// --------------------------------------------------------------------------------------------
+// Refer: https://github.com/ionescu007/clfs-docs?tab=readme-ov-file#node-types
+
+/**
+ * The FCB is attached to the FILE_OBJECT through the FsContext field,
+ * and the CCB is attached through the FsContext2.
+ * Since CLFS does not handle volumes, no VCB is actually ever used.
+ */
+#define CLFS_NODE_TYPE_FCB 0xC1FDF001 // File Control Block
+#define CLFS_NODE_TYPE_VCB 0xC1FDF002 // Volume Control Block
+#define CLFS_NODE_TYPE_CCB 0xC1FDF003 // Cache Control Block
+/**
+ * CLFS builds a Request (CClfsRequest) structure when parsing IRPs.
+ */
+#define CLFS_NODE_TYPE_REQ 0xC1FDF004
+#define CLFS_NODE_TYPE_CCA 0xC1FDF005 // TODO: unclear what the abbreviation CCA
+/**
+ * Structures that are present inside of Base Log Files (BLF)
+ */
+#define CLFS_NODE_TYPE_SYMBOL 0xC1FDF006
+#define CLFS_NODE_TYPE_CLIENT_CONTEXT 0xC1FDF007
+#define CLFS_NODE_TYPE_CONTAINER_CONTEXT 0xC1FDF008
+#define CLFS_NODE_TYPE_SHARED_SECURITY_CONTEXT 0xC1FDF00D
+/**
+ * associated with the CLFS Device Extension that is 
+ * attached to the `\Device\clfs` Device Object.
+ */
+#define CLFS_NODE_TYPE_DEVICE_EXTENSION 0xC1FDF009
+/**
+ * identified by CClfsKernelMarshallingContext or CClfsMarshallingContext
+ * Such data structures are created through the ClfsCreateMarshallingArea API
+ */
+#define CLFS_NODE_TYPE_MARSHALING_AREA 0xC1FDF00A
+/**
+ * When using the ScanLogContainers and PrepareLogArchive user-mode APIs
+ */
+#define CLFS_NODE_TYPE_ARCHIVE_CONTEXT 0xC1FDF00C
+#define CLFS_NODE_TYPE_SCAN_CONTEXT 0xC1FDF00E
+/**
+ * when using log restart areas
+ * ReadLogRestartArea or WriteLogRestartArea APIs
+ */
+#define CLFS_NODE_TYPE_LOG_READ_IOCB 0xC1FDF00F
+#define CLFS_NODE_TYPE_LOG_WRITE_IOCB 0xC1FDF010
+
+typedef enum<ULONG> {
+    FCB                      = CLFS_NODE_TYPE_FCB, // File Control Block
+    VCB                      = CLFS_NODE_TYPE_VCB, // Volume Control Block
+    CCB                      = CLFS_NODE_TYPE_CCB, // Cache Control Block
+    REQ                      = CLFS_NODE_TYPE_REQ, // When parsing IRPs, CLFS builds a Request (CClfsRequest) structure
+    CCA                      = CLFS_NODE_TYPE_CCA, // TODO: Unknown
+    SYMBOL                   = CLFS_NODE_TYPE_SYMBOL, // Base Log Files
+    CLIENT_CONTEXT           = CLFS_NODE_TYPE_CLIENT_CONTEXT, // Base Log Files
+    CONTAINER_CONTEXT        = CLFS_NODE_TYPE_CONTAINER_CONTEXT, // Base Log Files
+    SHARED_SECURITY_CONTEXT  = CLFS_NODE_TYPE_SHARED_SECURITY_CONTEXT, // Base Log Files
+    DEVICE_EXTENSION         = CLFS_NODE_TYPE_DEVICE_EXTENSION, // CLFS Device Extension
+    MARSHALING_AREA          = CLFS_NODE_TYPE_MARSHALING_AREA, // identified by CClfsKernelMarshallingContext or CClfsMarshallingContext
+    ARCHIVE_CONTEXT          = CLFS_NODE_TYPE_ARCHIVE_CONTEXT, // When using the ScanLogContainers and PrepareLogArchive user-mode APIs
+    SCAN_CONTEXT             = CLFS_NODE_TYPE_SCAN_CONTEXT,
+    LOG_READ_IOCB            = CLFS_NODE_TYPE_LOG_READ_IOCB, // with either the ReadLogRestartArea or WriteLogRestartArea APIs
+    LOG_WRITE_IOCB           = CLFS_NODE_TYPE_LOG_WRITE_IOCB,
+} CLFS_NODE_TYPE;
+
+typedef struct _CLFS_NODE_ID {
+    CLFS_NODE_TYPE Type;
+    DWORD Node;
+} CLFS_NODE_ID;
+
+/* ======== Log Block Header ======== */
+typedef enum<ULONGLONG> {
+    RESET             = 0x00000000,
+    ENCODED           = 0x00000001,
+    DECODED           = 0x00000002,
+    LATCHED           = 0x00000004,
+    TRUNCATE_DISCARD  = 0x00000008,
+} CLFS_BLOCK_TYPE;
+
+typedef struct _CLFS_LOG_BLOCK_HEADER {
+    UCHAR MajorVersion;
+    UCHAR MinorVersion;
+    UCHAR SequenceNumber;
+    UCHAR ClientId;
+    USHORT LengthInSectors;
+    USHORT ActualLengthInSectors;
+    ULONG SectorSize<comment="unused">;
+    ULONG Crc<format=hex>;
+    CLFS_BLOCK_TYPE Flags;
+    CLFS_LSN CurrentLsn;
+    CLFS_LSN NextLsn;
+    DWORD RecordBuckets[16];
+    DWORD SignaturesOffset;
+    DWORD Padding<hidden=true>;
+} CLFS_LOG_BLOCK_HEADER;
+
+/* ======== Control Record ======== */
+#define CLFS_METADATA_BLOCK_COUNT 0x06
+
+typedef struct _CLFS_METADATA_RECORD_HEADER {
+    ULONGLONG DumpCount;
+} CLFS_METADATA_RECORD_HEADER;
+
+typedef enum<ULONG> _CLFS_EXTEND_STATE {
+    ClfsExtendStateNone             = 0x00000000,
+    ClfsExtendStateExtendingFsd     = 0x00000001,
+    ClfsExtendStateFlushingBlock    = 0x00000002,
+}CLFS_EXTEND_STATE;
+
+typedef enum<ULONG> _CLFS_TRUNCATE_STATE {
+    ClfsTruncateStateNone                   = 0x00000000,
+    ClfsTruncateStateModifyingStream        = 0x00000001,
+    ClfsTruncateStateSavingOwner            = 0x00000002,
+    ClfsTruncateStateModifyingOwner         = 0x00000003,
+    ClfsTruncateStateSavingDiscardBlock     = 0x00000004,
+    ClfsTruncateStateModifyingDiscardBlock  = 0x00000005,
+} CLFS_TRUNCATE_STATE;
+
+typedef struct _CLFS_TRUNCATE_CONTEXT {
+    CLFS_TRUNCATE_STATE TruncateState;
+    UCHAR cClients;
+    UCHAR iClient;
+    USHORT TruncateField;
+    CLFS_LSN LsnOwnerPage;
+    CLFS_LSN LsnLastOwnerPage;
+    ULONGLONG InvalidSector;
+} CLFS_TRUNCATE_CONTEXT;
+
+typedef enum<ULONGLONG> _CLFS_METADATA_BLOCK_TYPE {
+    ClfsMetaBlockControl          = 0x00000000,
+    ClfsMetaBlockControlShadow    = 0x00000001,
+    ClfsMetaBlockGeneral          = 0x00000002,
+    ClfsMetaBlockGeneralShadow    = 0x00000003,
+    ClfsMetaBlockScratch          = 0x00000004,
+    ClfsMetaBlockScratchShadow    = 0x00000005,
+} CLFS_METADATA_BLOCK_TYPE;
+
+typedef struct {
+    union {
+        ULONGLONG pbImage;
+        ULONGLONG ullAlignment;
+    } Ptr;
+    ULONG cbImage;
+    ULONG cbOffset;
+    CLFS_METADATA_BLOCK_TYPE eBlockType;
+} CLFS_METADATA_BLOCK;
+
+typedef struct _CLFS_CONTROL_RECORD {
+    CLFS_METADATA_RECORD_HEADER hdrMetaDataHeader<style=sHeading2>;
+    ULONGLONG ullMagic;
+    ULONG Version;
+    CLFS_EXTEND_STATE eExtendState<comment="current extend state for the file">;
+    USHORT iExtendBlock;
+    USHORT iFlushBlock;
+    ULONG cNewBlockSectors;
+    ULONG cExtendStartSectors;
+    ULONG cExtendSectors;
+    CLFS_TRUNCATE_CONTEXT cxTruncate;
+    ULONGLONG cBlocks;
+    CLFS_METADATA_BLOCK RgBlocks[this.cBlocks];
+} CLFS_CONTROL_RECORD;
+
+/* ======== Base Record ======== */
+#define CLIENT_SYMTBL_SIZE          0x0B
+#define CONTAINER_SYMTBL_SIZE 0x0B
+#define SECURITY_SYMTBL_SIZE  0x0B
+#define MAX_CLIENT_DEFAULT          0x7C
+#define MAX_CONTAINER_DEFAULT       0x400
+
+typedef enum<UCHAR> _CLFS_LOG_STATE {
+    UNINITIALIZED    = 0x00000001,
+    INITIALIZED      = 0x00000002,
+    ACTIVE           = 0x00000004,
+    PENDING_DELETE   = 0x00000008,
+    PENDING_ARCHIVE  = 0x00000010,
+    SHUTDOWN         = 0x00000020,
+    MULTIPLEXED      = 0x00000040,
+    SECURE           = 0x00000080,
+} CLFS_LOG_STATE;
+
+typedef enum<ULONG> _CLFS_CONTAINER_STATE {
+  ClfsContainerInitializing            = 0x01,
+  ClfsContainerInactive                = 0x02,
+  ClfsContainerActive                  = 0x04,
+  ClfsContainerActivePendingDelete     = 0x08,
+  ClfsContainerPendingArchive          = 0x10,
+  ClfsContainerPendingArchiveAndDelete = 0x20
+} CLFS_CONTAINER_STATE;
+
+typedef struct {
+    CLFS_METADATA_RECORD_HEADER hdrRecordHeader;
+    GUID cIdLog;
+    ULONGLONG rgClientSymTbl[CLIENT_SYMTBL_SIZE];
+    ULONGLONG rgContainerSymTbl[CONTAINER_SYMTBL_SIZE];
+    ULONGLONG rgSecuritySymTbl[SECURITY_SYMTBL_SIZE];
+    ULONG cNextContainer;
+    ULONG cNextClient;
+    ULONG cFreeContainers;
+    ULONG cActiveContainers;
+    ULONG cbFreeContainers;
+    ULONG cbBusyContainers;
+    ULONG rgClients[MAX_CLIENT_DEFAULT];
+    ULONG rgContainers[MAX_CONTAINER_DEFAULT];
+    ULONG cbSymbolZone;
+    ULONG cbSector;
+    USHORT bUnused;
+    CLFS_LOG_STATE eLogState;
+    UCHAR cUsn;
+    UCHAR cClients;
+    UCHAR Padding[3]<hidden=true>;
+} CLFS_BASE_RECORD_HEADER;
+
+typedef struct _CLFSHASHSYM {
+    CLFS_NODE_ID cIdNode;
+    ULONG ulHash;
+    ULONG cbHash;
+    ULONGLONG ullBelow;
+    ULONGLONG ullAbove;
+    ULONG cbSymbolName;
+    USHORT cbOffset;
+    UCHAR fDeleted;
+    UCHAR Padding[7+2]<hidden=true>;
+} CLFSHASHSYM;
+
+typedef ULONGLONG LARGE_INTEGER;
+
+typedef struct {
+    CLFS_NODE_ID cidNode;
+    CLFS_CLIENT_ID cidClient;
+    FILE_ATTRIBUTES fAttributes;
+    ULONG cbFlushThreshold;
+    ULONG cShadowSectors;
+    ULONG Padding<hidden=true>;
+    ULONGLONG cbUndoCommitment;
+    LARGE_INTEGER llCreateTime;
+    LARGE_INTEGER llAccessTime;
+    LARGE_INTEGER llWriteTime;
+    
+    CLFS_LSN lsnOwnerPage;
+    CLFS_LSN lsnArchiveTail;
+    CLFS_LSN lsnBase;
+    CLFS_LSN lsnLast;
+    CLFS_LSN lsnRestart;
+    CLFS_LSN lsnPhysicalBase;
+    CLFS_LSN lsnUnused1;
+    CLFS_LSN lsnUnused2;
+    CLFS_LOG_STATE State<comment=Str(" -> %Xh", (this & 0x10) == 0 ? this : (this | 8))>;
+    UCHAR Padding2[7]<hidden=true>;
+    union {
+        HANDLE hSecurityContext;
+        ULONGLONG ullAlignment;
+    } hSec;
+} CLFS_CLIENT_CONTEXT;
+
+typedef ULONGLONG CLFS_CONTAINER_PTR;
+
+typedef struct _CLFS_CONTAINER_CONTEXT {
+    CLFS_NODE_ID cidNode;
+    ULONGLONG cbContainer;
+    CLFS_CONTAINER_ID cidContainer;
+    CLFS_CONTAINER_ID cidQueue;
+    union
+    {
+        CLFS_CONTAINER_PTR pContainer; //8 bytes
+        ULONGLONG ullAlignment;
+    } Ptr;
+    ULONG usnCurrent;
+    CLFS_CONTAINER_STATE eState;
+    ULONG cbPrevOffset;
+    ULONG cbNextOffset;
+} CLFS_CONTAINER_CONTEXT;
+
+// This should only ever be present in-memory
+typedef struct CLFS_SHARED_SECURITY_CONTEXT {
+    CLFS_NODE_ID NodeId;
+    ULONG Ref;
+    ULONG RefActive;
+    ULONG DescriptorOffset;
+    ULONG Descriptor;
+    UCHAR RgSecurityDescriptor[0]; // initialize as 0 for now, we're only parsing persistent files
+};
+
+/* ======== Truncate Record ======== */
+typedef struct {
+    CLFS_METADATA_RECORD_HEADER MetaDataHeader;
+    ULONG ClientChangeOffset;
+    ULONG OwnerPageOffset;
+} CLFS_TRUNCATE_RECORD_HEADER<bgcolor=cLtPurple>;
+
+typedef struct CLFS_SECTOR_CHANGE {
+    ULONG InitializedSector;
+    ULONG Unused;
+    UCHAR Sector[512];    // CLFS sector size
+};
+
+typedef struct CLFS_TRUNCATE_CLIENT_CHANGE {
+    CLFS_CLIENT_ID ClientId;
+    CLFS_LSN Lsn;
+    CLFS_LSN LsnClient;
+    CLFS_LSN LsnRestart;
+    USHORT Length;
+    USHORT OldLength;
+    DWORD Sectors;
+    CLFS_SECTOR_CHANGE RgSectors[Sectors];
+};
+
+/* ======== Container Record Header ======== */
+typedef enum<DWORD> {
+    ClfsNullRecord          = 0x00000000, // Null record
+    ClfsDataRecord          = 0x00000001, // The log record contains client data
+    ClfsRestartRecord       = 0x00000002, // The log record is a restart record
+    ClfsStartRecord         = 0x00000004, // Start of continuation record
+    ClfsEndRecord           = 0x00000008, // End of continuation record
+    ClfsContinuationRecord  = 0x00000010, // Continuation record
+    ClfsLastRecord          = 0x00000020, // The last record in the log block
+} RecordType<format=hex>;
+
+typedef struct RECORD_HEADER {
+    ULONGLONG LsnVirtual;
+    ULONGLONG LsnUndoNext;
+    ULONGLONG LsnPrevious;
+    DWORD DataSize;
+    DWORD Unknown;
+    USHORT RecordFlags;
+    USHORT Offset;
+    RecordType Type;
+};
+
+const USHORT CLFS_RECORD_OFFSETS_COUNT = 16;
+
+// ==== Code ====
+LittleEndian();
+
+
+void ParseControlBlock(void) {
+    struct {
+        CLFS_LOG_BLOCK_HEADER Header<style=sHeading1>;
+        local int i;
+        for (i = 0; i < CLFS_RECORD_OFFSETS_COUNT; i++) {
+            if (Header.RecordBuckets[i] == 0) { // skip 
+                continue;
+            }
+            FSeek(startof(Header) + Header.RecordBuckets[i]);
+            CLFS_CONTROL_RECORD Record<style=sHeading2>;
+        }
+        ParseSectors(Header);
+    } ControlBlock<style=sSection1>;
+}
+
+void ParseControlBlockShadow(void) {
+    struct {
+        CLFS_LOG_BLOCK_HEADER Header<style=sHeading1>;
+        local int i;
+        for (i = 0; i < CLFS_RECORD_OFFSETS_COUNT; i++) {
+            if (Header.RecordBuckets[i] == 0) { // skip 
+                continue;
+            }
+            FSeek(startof(Header) + Header.RecordBuckets[i]);
+            CLFS_CONTROL_RECORD Record<style=sHeading2>;
+        }
+    } ControlBlockShadow<style=sSection2>;
+}
+
+
+wstring GetSymString(CLFSHASHSYM &Sym)
+{
+    local int64 Pos = startof(parentof(parentof(Sym))) /* RecordHeader */
+             + Sym.cbSymbolName;
+    // Printf("POS: 0x%08X\n", startof(parentof(parentof(Sym))));
+    return ReadWString(Pos);
+}
+
+void ParseClientContext(CLFS_BASE_RECORD_HEADER &bRHeader) {
+
+    struct (CLFS_BASE_RECORD_HEADER &bRHeader) {
+        local quad off = FTell();
+        local int i;
+        local int cClients = bRHeader.cClients;
+        if (cClients == 0) {
+            Printf("[!] ParseClientContext: Clients Count == 0, try to parse once.\n");
+            cClients = 1;
+        }
+
+        for (i = 0; i < cClients; i++) {
+            if (bRHeader.rgClients[i] == 0) { // skip 
+                continue;
+            }
+            
+            FSeek(startof(bRHeader) + bRHeader.rgClients[i]);
+            Printf("[*] ParseClientContext: Seek Offset: 0x%08X\n", startof(bRHeader) + bRHeader.rgClients[i]);
+            CLFS_CLIENT_CONTEXT Context;
+            if (Context.cidNode.Type != CLIENT_CONTEXT) { // valid
+                Printf("[!] ParseClientContext: Invalid NodeId type: %d\n", Context.NodeId.Type);
+            }
+        }
+        FSeek(off);
+    } ClientContext(bRHeader)<style=sHeading3>;
+}
+
+void ParseClientSymbolTable(CLFS_BASE_RECORD_HEADER &bRHeader) {
+    struct (CLFS_BASE_RECORD_HEADER &bRHeader) {
+        local quad off = FTell();
+        local int great = 0;
+        local int i;
+        for (i = 0; i < CLIENT_SYMTBL_SIZE; i++) {
+            if (bRHeader.rgClientSymTbl[i] == 0) { // skip
+                continue;
+            }
+            
+            if (bRHeader.rgClientSymTbl[i] && great) {
+                Printf("[!] TODO: ClientSymbolTable[%d] = 0x%X\n", i, bRHeader.rgClientSymTbl[i]);
+                //continue;
+            }
+
+            great = 1;
+            FSeek(startof(bRHeader) + bRHeader.rgClientSymTbl[i]);
+            Printf("[*] ParseClientSymbolTable: Seek Offset: 0x%08X\n", startof(bRHeader) + bRHeader.rgClientSymTbl[i]);
+            CLFSHASHSYM Sym<comment=GetSymString>;
+            if (Sym.cIdNode.Type != SYMBOL) { // valid
+                Printf("[!] ParseClientSymbolTable: Invalid NodeId type: %d\n", Sym.NodeId.Type);
+            }
+        }
+        FSeek(off);
+    } ClientSymbolTable(bRHeader)<style=sHeading4>;
+}
+
+
+//void VaildClientContextWithSymbol(CLFS_BASE_RECORD_HEADER &bRHeader)
+
+
+void ParseContainerContext(CLFS_BASE_RECORD_HEADER &bRHeader) {
+
+    struct (CLFS_BASE_RECORD_HEADER &bRHeader) {
+        local quad off = FTell();
+        local int count;
+        local int i;
+        for (i = 0; count < bRHeader.cActiveContainers && i < MAX_CONTAINER_DEFAULT; i++) {
+            if (bRHeader.rgContainers[i] == 0) { // skip 
+                continue;
+            }
+        
+            if (bRHeader.rgContainers[i] > (parentof(parentof(bRHeader)).Header.LengthInSectors << 9)) {
+                Printf("[!] Skip ParseContainerContext: Invalid ContainerArray[%d]: 0x%08X\n", i, bRHeader.rgContainers[i]);
+                continue;
+            }
+            
+            FSeek(startof(bRHeader) + bRHeader.rgContainers[i]);
+            Printf("[*] ParseContainerContext: Seek Offset: 0x%08X\n", startof(bRHeader) + bRHeader.rgContainers[i]);
+            CLFS_CONTAINER_CONTEXT Context;
+            if (Context.cidNode.Type != CONTAINER_CONTEXT) { // valid
+                Printf("[!] ParseContainerContext: Invalid NodeId type: %X\n", Context.cidNode.Type);
+            }
+            count++; // count
+        }
+        FSeek(off);
+    } ContainerContext(bRHeader)<style=sHeading3>;
+}
+
+void ParseContainerSymbolTable(CLFS_BASE_RECORD_HEADER &bRHeader) {
+    
+    struct (CLFS_BASE_RECORD_HEADER &bRHeader) {
+        local quad off = FTell();
+        local int i;
+        for (i = 0; i < CONTAINER_SYMTBL_SIZE; i++) {
+            if (bRHeader.rgContainerSymTbl[i] == 0) { // skip
+                continue;
+            }
+            if (bRHeader.rgContainerSymTbl[i] > 0xFFFF) {
+                Printf("[!] ParseContainerSymbolTable: Invalid ContainerSymbolTable Value: 0x%ld\n", bRHeader.rgContainerSymTbl[i]);
+                continue;
+            }
+            FSeek(startof(bRHeader) + bRHeader.rgContainerSymTbl[i]);
+            Printf("[*] ParseContainerSymbolTable: Seek Offset: 0x%08X\n", startof(bRHeader) + bRHeader.rgContainerSymTbl[i]);
+            CLFSHASHSYM Sym<comment=GetSymString>;
+            if (Sym.cIdNode.Type != SYMBOL) { // valid
+                Printf("[!] ParseContainerSymbolTable: Invalid NodeId type: 0x%08X\n", Sym.cIdNode.Type);
+            }
+        }
+        FSeek(off);
+    } ContainerSymbolTable(bRHeader)<style=sHeading4>;
+    
+}
+
+// ! TODO: Not Implemented.
+void ParseSecurityContext(CLFS_BASE_RECORD_HEADER &bRHeader) {
+    
+    struct (CLFS_BASE_RECORD_HEADER &bRHeader) {
+        local int i;
+        for (i = 0; i < bRHeader.ActiveContainers; i++) {
+            if (bRHeader.ContainerArray[i] == 0) { // skip 
+                continue;
+            }
+            FSeek(startof(bRHeader) + bRHeader.ContainerArray[i]);
+            Printf("[*] ParseSecurityContext: Seek Offset: 0x%08X\n", startof(bRHeader) + bRHeader.ContainerArray[i]);
+            CLFS_SHARED_SECURITY_CONTEXT Context;
+            if (Context.NodeId.Type != SHARED_SECURITY_CONTEXT) { // valid
+                Printf("[!] ParseSecurityContext: Invalid NodeId type: %d\n", Context.NodeId.Type);
+            }
+        }
+        
+    } SecurityContext(bRHeader);
+}
+
+void ParseSecuritySymbolTable(CLFS_BASE_RECORD_HEADER &bRHeader) {
+    struct (CLFS_BASE_RECORD_HEADER &bRHeader) {
+        local quad off = FTell();
+        local int i;
+        for (i = 0; i < SECURITY_SYMTBL_SIZE; i++) {
+            if (bRHeader.rgSecuritySymTbl[i] == 0) { // skip
+                continue;
+            }
+            FSeek(startof(bRHeader) + bRHeader.rgSecuritySymTbl[i]);
+            Printf("[*] ParseSecuritySymbolTable: Seek Offset: 0x%08X\n", startof(bRHeader) + bRHeader.rgSecuritySymTbl[i]);
+            CLFSHASHSYM Sym<comment=GetSymString>;
+            if (Sym.NodeId.Type != SYMBOL) { // valid
+                Printf("[!] ParseSecuritySymbolTable: Invalid NodeId type: 0x%08X\n", Sym.cIdNode.Type);
+            }
+        }
+        FSeek(off);
+    } SecuritySymbolTable(bRHeader);
+}
+
+
+void ParseBaseRecord(void) {
+    CLFS_BASE_RECORD_HEADER BaseRecordHeader<style=sHeading2>;
+
+    ParseClientContext(BaseRecordHeader);
+    ParseClientSymbolTable(BaseRecordHeader);
+
+    ParseContainerContext(BaseRecordHeader);
+    ParseContainerSymbolTable(BaseRecordHeader);
+    
+    ParseSecuritySymbolTable(BaseRecordHeader);
+    //ParseSecurityContext(BaseRecordHeader);
+    
+}
+
+void ParseBaseBlock(void) {
+    struct {
+        CLFS_LOG_BLOCK_HEADER Header<style=sHeading1>;
+        
+        for (i = 0; i < CLFS_RECORD_OFFSETS_COUNT; i++) {
+            if (Header.RecordBuckets[i] == 0) { // skip 
+                    continue;
+            }
+            FSeek(startof(Header) + Header.RecordBuckets[i]);
+            Printf("[*] ParseBaseBlock: Seek Offset: 0x%08X\n", startof(Header) + Header.RecordBuckets[i]);
+            struct {
+                ParseBaseRecord();
+            } RecordWrap;
+        } 
+        ParseSectors(Header);
+    } BaseBlock;
+}
+
+void ParseBaseBlockShadow(void) {
+    struct {
+        CLFS_LOG_BLOCK_HEADER Header<style=sHeading1>;
+        
+        for (i = 0; i < CLFS_RECORD_OFFSETS_COUNT; i++) {
+            if (Header.RecordBuckets[i] == 0) { // skip 
+                    continue;
+            }
+            FSeek(startof(Header) + Header.RecordBuckets[i]);
+            Printf("[*] ParseBaseBlockShadow: Seek Offset: 0x%08X\n", startof(Header) + Header.RecordBuckets[i]);
+            struct {
+                ParseBaseRecord();
+            } RecordWrap;
+        }
+        ParseSectors(Header);
+    } BaseBlockShadow;
+}
+
+
+void ParseTruncateRecord(void) {
+    CLFS_TRUNCATE_RECORD_HEADER BaseRecord<style=sHeading2>;
+}
+
+void ParseTruncateBlock(void) {
+    struct {
+            CLFS_LOG_BLOCK_HEADER Header<style=sHeading1>;
+            for (i = 0; i < CLFS_RECORD_OFFSETS_COUNT; i++) {
+                if (Header.RecordBuckets[i] == 0) { // skip 
+                    continue;
+                }
+                FSeek(startof(Header) + Header.RecordBuckets[i]);
+                ParseTruncateRecord();
+            }
+            ParseSectors(Header);
+    
+        } TruncateBlock;
+}
+
+void ParseTruncateBlockShadow(void) {
+    struct {
+            CLFS_LOG_BLOCK_HEADER Header<style=sHeading1>;
+            for (i = 0; i < CLFS_RECORD_OFFSETS_COUNT; i++) {
+                if (Header.RecordBuckets[i] == 0) { // skip 
+                    continue;
+                }
+                FSeek(startof(Header) + Header.RecordBuckets[i]);
+                ParseTruncateRecord();
+            }
+    
+        } TruncateBlockShadow;
+}
+
+void ParseControlRecords(void) {
+    CLFS_CONTROL_RECORD Record<hidden=false>; // include in Control Block
+    
+    local int cBlocks = Record.cBlocks;
+    Assert(cBlocks == 6, "[!] Record cBlocks less than 6.\n");
+    
+    local int i;
+    for (i = 0; i < cBlocks; i++) { // 6
+        // Printf("%d: Record.RgBlocks[i].Type: %d\n", i, Record.RgBlocks[i].Type);
+        FSeek(Record.RgBlocks[i].cbOffset);
+        switch (Record.RgBlocks[i].eBlockType) {
+            case ClfsMetaBlockControl:
+                ParseControlBlock();
+                break;
+            case ClfsMetaBlockControlShadow:
+                ParseControlBlockShadow();
+                break;
+            case ClfsMetaBlockGeneral:
+                ParseBaseBlock();
+                break;
+            case ClfsMetaBlockGeneralShadow:
+                ParseBaseBlockShadow();
+                break;
+            case ClfsMetaBlockScratch:
+                ParseTruncateBlock();
+                break;
+            case ClfsMetaBlockScratchShadow:
+                ParseTruncateBlockShadow();
+                break;
+        }
+    }
+}
+
+// ! Parse Chunk (Size: 0x200) Signatures
+const UCHAR SECTORSHIFT = 0x09;
+
+// flags
+#define BLOCK_SECTOR_END 0x20
+#define BLOCK_SECTOR_START 0x40
+
+typedef enum<UCHAR> {
+    NONE  = 0x00,
+    DATA  = 0x04,
+    OWNER = 0x08,
+    BASE  = 0x10,
+    
+    BASE_END   = BLOCK_SECTOR_END   | BASE,
+    BASE_START = BLOCK_SECTOR_START | BASE,
+} SECTOR_BLOCK_TYPE<comment="Sector Block type", format=hex>;
+
+
+// [Sector Block Type][Usn]
+typedef struct _SIGNTUARE {
+    SECTOR_BLOCK_TYPE sType;
+    UBYTE Usn;  
+} SIGNATURE;
+
+typedef union _SECTOR_SIGNTUARE {
+    SIGNATURE Signature;
+    BYTE RawData[2];
+} SECTOR_SIGNTUARE;
+
+local string Bytes2HexString(int64 pos, int size) {
+    local uchar bytes[size];
+    ReadBytes(bytes, pos, size);
+    
+    local string str;
+    local int i;
+
+    for (i = 0; i < size; i++) {
+        str += Str("%02X", bytes[i]);
+    }
+
+    return str;
+}
+
+void ParsePair(CLFS_LOG_BLOCK_HEADER &bHeader, int64 start) {
+    struct (CLFS_LOG_BLOCK_HEADER &bHeader, int64 start) {
+        FSeek(startof(bHeader) + bHeader.SignaturesOffset + sizeof(SECTOR_SIGNTUARE)*(i-1));
+        SECTOR_SIGNTUARE SigBackup<style=sSection3, comment="SigntrueArray(Decode=Restore, Encode=Backup)">;
+
+        FSeek(startof(bHeader) + (i << SECTORSHIFT) - sizeof(SECTOR_SIGNTUARE));
+        SECTOR_SIGNTUARE SigB<style=sSection2>;
+
+        if (this.SigB.Signature.Usn != bHeader.SequenceNumber) Printf("[!] ParseSectors: Invalid Usn: 0x%02X\n", this.Usn);
+        FSeek(start);
+    
+    // Format Display Pair
+    local string str;
+    
+
+    SPrintf(str, "ChunkSig: %s <--> SigEnd: %s", 
+        Bytes2HexString(startof(this.SigB), sizeof(SECTOR_SIGNTUARE)),
+        Bytes2HexString(startof(this.SigBackup), sizeof(SECTOR_SIGNTUARE))
+    );
+
+    } SigntuareMap(bHeader, start)<comment=str>;
+}
+
+void ParseSectors(CLFS_LOG_BLOCK_HEADER &bHeader) {
+    if (bHeader.LengthInSectors == 0) {
+        Printf("[*] ParseSectors: Skip TotalSectorCount: 0x%02X\n", bHeader.LengthInSectors);
+        return;
+    }
+
+    struct (CLFS_LOG_BLOCK_HEADER &bHeader) {
+        local int i;
+        local int64 start = FTell();
+        for (i = 1; i <= bHeader.LengthInSectors; i++) {
+            ParsePair(bHeader, start);
+        }
+
+    } Sectors(bHeader);
+
+    // Flag: 0x20 | 0x40 | 0x10 when the Sector Count == 1. 
+    if (bHeader.LengthInSectors == 1) {
+        if (Sectors.SigntuareMap[0].SigB.Signature.sType != (BLOCK_SECTOR_END | BLOCK_SECTOR_START | BASE)) {
+            Printf("[!] ParseSectors: Invalid First Sector: 0x%02X\n", Sectors.Pair[0].ChunkSig.Flag);
+        }
+        return;
+    }
+
+    // TODO: Verify First Sector Signature.
+    if (Sectors.SigntuareMap[0].SigB.Signature.sType != (BLOCK_SECTOR_START | BASE)) {
+        Printf("[!] ParseSectors: Invalid First Sector: 0x%02X\n", Sectors.Pair[0].ChunkSig.Flag);
+    }
+   
+    // TODO: Verify Last Sector Signature.
+    if (Sectors.SigntuareMap[bHeader.LengthInSectors - 1].SigB.Signature.sType != (BLOCK_SECTOR_END | BASE)) {
+        Printf("[!] ParseSectors: Invalid First Sector: 0x%02X\n", Sectors.Pair[bHeader.TotalSectorCount - 1].ChunkSig.Flag);
+    }
+}
+
+
+Printf("[+]Parse BLF Begin\n");
+
+CLFS_LOG_BLOCK_HEADER Header<hidden=false>; // include in Control Block
+
+local int i;
+local DWORD recordOffsets;
+for (i = 0; i < CLFS_RECORD_OFFSETS_COUNT; i++) {
+    if (Header.RecordBuckets[i] == 0) { // skip 
+        continue;
+    }
+    recordOffsets = Header.RecordBuckets[i];
+    FSeek(recordOffsets); // 0x7c * n
+
+    ParseControlRecords();
+}
+
+
+
+Printf("[+]Parse BLF End\n");
+
+
